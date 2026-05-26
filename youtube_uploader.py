@@ -242,6 +242,7 @@ def _resumable_upload(
             "description": description,
             "tags":        tags,
             "categoryId":  YOUTUBE_CATEGORY_ID,
+            "channelId": config.YOUTUBE_CHANNEL_ID,
         },
         "status": {
             "privacyStatus":          YOUTUBE_PRIVACY,

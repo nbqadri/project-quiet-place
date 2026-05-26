@@ -70,3 +70,5 @@ YOUTUBE_PRIVACY = "public"   # public | private | unlisted
 # ─── Retry ────────────────────────────────────────────────────────────────────
 MAX_RETRIES = 3
 RETRY_DELAY = 2   # seconds between retries
+
+YOUTUBE_CHANNEL_ID: str = os.getenv("YOUTUBE_CHANNEL_ID", "")
