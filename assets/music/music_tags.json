@@ -1,0 +1,14 @@
+{
+  "_readme": "Map each music filename to mood/keyword tags for smart track selection.",
+
+  "chill_morning.mp3":      ["morning", "calm", "peaceful", "yoga", "meditation", "breathe"],
+  "deep_focus.mp3":         ["focus", "productivity", "work", "study", "concentration"],
+  "epic_motivation.mp3":    ["motivation", "power", "energy", "strength", "workout", "gym"],
+  "nature_sounds.mp3":      ["nature", "forest", "rain", "water", "relax", "peace"],
+  "piano_reflection.mp3":   ["reflection", "emotional", "sad", "contemplation", "mindfulness"],
+  "uplifting_beat.mp3":     ["uplifting", "happy", "joy", "positive", "success", "inspiration"],
+  "yoga_flow.mp3":          ["yoga", "flow", "stretch", "breathe", "calm", "balance"],
+  "ambient_space.mp3":      ["ambient", "space", "cosmos", "vast", "wonder", "universe"],
+  "meditation_bells.mp3":   ["meditation", "zen", "bells", "stillness", "mindfulness", "peace"],
+  "guitar_sunset.mp3":      ["sunset", "warmth", "acoustic", "relaxing", "evening", "gentle"]
+}
