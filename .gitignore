@@ -31,3 +31,6 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+# no need to push images etc to git
+.assets/
+.output/

@@ -175,11 +175,14 @@ def _device_code_flow(secrets: dict) -> Optional[str]:
                 "scope":     " ".join(YOUTUBE_SCOPES),
             },
             timeout=20,
+
         )
         resp.raise_for_status()
         device_data = resp.json()
     except Exception as exc:
         log.error("Device code request failed: %s", exc)
+        print("Status code:", resp.status_code)  # temp for debugging, remove later
+        print("Response body:", resp.text) # temp for debugging, remove later
         return None
 
     print(
@@ -242,7 +245,6 @@ def _resumable_upload(
             "description": description,
             "tags":        tags,
             "categoryId":  YOUTUBE_CATEGORY_ID,
-            "channelId": config.YOUTUBE_CHANNEL_ID,
         },
         "status": {
             "privacyStatus":          YOUTUBE_PRIVACY,

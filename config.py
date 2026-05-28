@@ -34,11 +34,13 @@ OUTPUT_DIR = BASE_DIR / "output"
 FONTS_DIR = BASE_DIR / "fonts"
 CACHE_DB = ASSETS_DIR / "cache.json"
 
-for _dir in (IMAGES_DIR, MUSIC_DIR, OUTPUT_DIR, FONTS_DIR):
+CTA_DIR = ASSETS_DIR / "youtube_CTA"
+
+for _dir in (IMAGES_DIR, MUSIC_DIR, OUTPUT_DIR, FONTS_DIR, CTA_DIR):
     _dir.mkdir(parents=True, exist_ok=True)
 
 # ─── Claude ───────────────────────────────────────────────────────────────────
-CLAUDE_MODEL = "claude-sonnet-4-20250514"
+CLAUDE_MODEL = "claude-sonnet-4-5"
 CLAUDE_MAX_TOKENS = 1024
 NUM_QUOTES = 9           # 8–10 quotes per run
 
@@ -56,10 +58,17 @@ VIDEO_FPS = 30
 MUSIC_VOLUME = 0.20       # 20 % of original volume
 
 # Font settings – fallback to system font if custom not present
+# Recommended: download a serif font e.g. PlayfairDisplay-Bold.ttf or Georgia
 FONT_FILE = FONTS_DIR / "NotoSans-Bold.ttf"
 FONT_SIZE = 72
 FONT_COLOR = "white"
 BOX_COLOR = "0x000000@0.55"   # semi-transparent black box behind text
+
+# ─── Branding ─────────────────────────────────────────────────────────────────
+BRAND_TITLE    = os.getenv("BRAND_TITLE",    "CALM")          # large title on intro card
+BRAND_SUBTITLE = os.getenv("BRAND_SUBTITLE", "REFLECTIONS")   # subtitle below title
+CTA_TEXT       = os.getenv("CTA_TEXT",       "Subscribe for daily reflections")
+YOUTUBE_CHANNEL_ID = os.getenv("YOUTUBE_CHANNEL_ID", "")
 
 # ─── YouTube ──────────────────────────────────────────────────────────────────
 YOUTUBE_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
@@ -70,5 +79,3 @@ YOUTUBE_PRIVACY = "public"   # public | private | unlisted
 # ─── Retry ────────────────────────────────────────────────────────────────────
 MAX_RETRIES = 3
 RETRY_DELAY = 2   # seconds between retries
-
-YOUTUBE_CHANNEL_ID: str = os.getenv("YOUTUBE_CHANNEL_ID", "")
