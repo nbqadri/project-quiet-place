@@ -1,6 +1,12 @@
 """
 claude_generator.py – Generate inspirational quotes via the Anthropic Claude API.
-Quotes always include an attribution (author name, cultural proverb, etc.)
+
+Each quote object contains:
+  - quote       : the inspirational quote text
+  - attribution : author or source e.g. "— Rumi" or "— Ancient Chinese Proverb"
+  - keywords    : 3-5 mood/imagery words for image + music matching
+  - title       : short, human, engaging YouTube video title
+  - pinned_comment : standalone engaging comment for pinning (not a repeat of the quote)
 """
 
 import json
@@ -17,6 +23,8 @@ from config import (
     NUM_QUOTES,
     MAX_RETRIES,
     RETRY_DELAY,
+    BRAND_TITLE,
+    BRAND_SUBTITLE,
 )
 
 log = logging.getLogger(__name__)
@@ -26,14 +34,16 @@ log = logging.getLogger(__name__)
 
 def generate_quotes(topic: str) -> list[dict]:
     """
-    Generate NUM_QUOTES inspirational quotes for *topic*.
+    Generate NUM_QUOTES quote objects for *topic*.
 
-    Returns a list of dicts:
-        [{
-            "quote":       "The quieter you become...",
-            "attribution": "— Rumi",
-            "keywords":    ["stillness", "calm", "meditation"]
-        }, ...]
+    Each object:
+        {
+            "quote":          "...",
+            "attribution":    "— Author Name",
+            "keywords":       ["kw1", "kw2", ...],
+            "title":          "Short Human Video Title",
+            "pinned_comment": "Engaging standalone comment with hashtags"
+        }
     """
     if not ANTHROPIC_API_KEY:
         raise EnvironmentError("ANTHROPIC_API_KEY is not set in your .env file.")
@@ -58,35 +68,38 @@ def generate_quotes(topic: str) -> list[dict]:
 # ─── Internals ────────────────────────────────────────────────────────────────
 
 def _build_prompt(topic: str) -> str:
-    return f"""You are a creative writer specialising in short, powerful inspirational quotes for social media videos.
+    series = f"{BRAND_TITLE} {BRAND_SUBTITLE}".strip()
+    return f"""You are a creative director for a YouTube Shorts channel called "{series}".
 
 Topic: "{topic}"
 
-Generate exactly {NUM_QUOTES} unique, uplifting quotes that are:
-- Between 10 and 20 words each
-- Relevant to the topic
-- Diverse in style (poetic, direct, metaphorical)
-- Attributed to a real person, cultural source, or tradition
-  Examples of attribution styles:
-    "— Rumi"
-    "— Martin Luther King Jr."
-    "— Ancient Chinese Proverb"
-    "— Lao Tzu"
-    "— Maya Angelou"
-    "— Japanese Zen Saying"
-    "— Stoic Philosophy"
-    "— Thich Nhat Hanh"
-  Use REAL attributions that genuinely match the quote's spirit.
-  If a quote is original/generic, attribute it to a fitting cultural tradition.
+Generate exactly {NUM_QUOTES} unique inspirational quote objects. For each one provide ALL of the following fields:
 
-Also provide 3–5 single-word keywords per quote for image searching.
+1. "quote" — an uplifting quote, 10–20 words, relevant to the topic. Use real attributed quotes where possible, otherwise craft an original one.
 
-Respond ONLY with a valid JSON array – no markdown fences, no extra text:
+2. "attribution" — the author or source, formatted as "— Firstname Lastname" or "— Ancient Proverb" or "— Old Chinese Saying" etc. Never leave this blank.
+
+3. "keywords" — 3 to 5 single lowercase words describing the mood and imagery (used for searching background images and music).
+
+4. "title" — a short, human, engaging YouTube video title. 4–7 words. Should feel like something a person would write, not a robot. Do NOT include numbers or "shorts" or "video". Examples: "Find Stillness in the Noise", "The Strength Within You", "Every Step Forward Counts".
+
+5. "pinned_comment" — a standalone engaging comment to be pinned on the video. Rules:
+   - Does NOT repeat or quote the quote text
+   - Can be a thought-provoker, surprising fact, gentle challenge, warm statement, or open reflection
+   - Conversational and human — reads like a real person wrote it
+   - 1 to 3 sentences maximum
+   - Never starts with "I" or "We"
+   - Ends with 2–3 relevant hashtags, always including #{BRAND_TITLE}{BRAND_SUBTITLE.replace(' ', '')}
+   - One tasteful emoji is optional but not required every time
+
+Respond ONLY with a valid JSON array — no markdown fences, no extra text:
 [
   {{
-    "quote": "The full quote text here.",
-    "attribution": "— Author or Source",
-    "keywords": ["keyword1", "keyword2", "keyword3"]
+    "quote": "...",
+    "attribution": "— ...",
+    "keywords": ["...", "..."],
+    "title": "...",
+    "pinned_comment": "..."
   }},
   ...
 ]"""
@@ -116,8 +129,9 @@ def _call_claude(prompt: str) -> str:
 def _parse_response(raw: str) -> list[dict]:
     text = raw.strip()
     if text.startswith("```"):
-        lines = text.splitlines()
-        text  = "\n".join(l for l in lines if not l.startswith("```")).strip()
+        text = "\n".join(
+            l for l in text.splitlines() if not l.startswith("```")
+        ).strip()
 
     quotes = json.loads(text)
     if not isinstance(quotes, list):
@@ -125,39 +139,97 @@ def _parse_response(raw: str) -> list[dict]:
 
     validated = []
     for item in quotes:
-        if isinstance(item, dict) and "quote" in item:
-            validated.append({
-                "quote":       str(item["quote"]).strip(),
-                "attribution": str(item.get("attribution", "")).strip(),
-                "keywords":    [str(k).lower() for k in item.get("keywords", [])],
-            })
+        if not isinstance(item, dict):
+            continue
+        if "quote" not in item:
+            continue
+        validated.append({
+            "quote":          str(item.get("quote", "")).strip(),
+            "attribution":    str(item.get("attribution", "")).strip(),
+            "keywords":       [str(k).lower() for k in item.get("keywords", [])],
+            "title":          str(item.get("title", "")).strip(),
+            "pinned_comment": str(item.get("pinned_comment", "")).strip(),
+        })
+
     if not validated:
-        raise ValueError("No valid quote objects in Claude response.")
+        raise ValueError("No valid quote objects found in Claude response.")
     return validated
 
 
 def _fallback_quotes(topic: str) -> list[dict]:
-    generic = [
-        ("The journey of a thousand miles begins with a single breath.",
-         "— Lao Tzu", ["journey", "calm", "start"]),
-        ("Peace is not found – it is cultivated from within.",
-         "— Thich Nhat Hanh", ["peace", "inner", "calm"]),
-        ("Let stillness be your greatest teacher today.",
-         "— Ancient Zen Saying", ["stillness", "meditation", "wisdom"]),
-        ("Every exhale releases what no longer serves you.",
-         "— Yoga Philosophy", ["breathe", "release", "yoga"]),
-        ("Strength grows in the moments you think you cannot go on.",
-         "— Ancient Greek Proverb", ["strength", "resilience", "power"]),
-        ("Your body hears everything your mind says – speak kindly.",
-         "— Naomi Judd", ["mindfulness", "body", "mind"]),
-        ("Slow down. The present moment is where magic lives.",
-         "— Eckhart Tolle", ["present", "slow", "magic"]),
-        ("Growth and comfort cannot coexist.",
-         "— Ginni Rometty", ["growth", "change", "challenge"]),
-        ("Breathe in possibility. Breathe out fear.",
-         "— Stoic Philosophy", ["breathe", "possibility", "courage"]),
+    series = f"{BRAND_TITLE}{BRAND_SUBTITLE.replace(' ', '')}"
+    data = [
+        (
+            "The journey of a thousand miles begins with a single breath.",
+            "— Lao Tzu",
+            ["journey", "calm", "begin"],
+            "Every Step Begins in Stillness",
+            f"The hardest part of any journey is trusting the first step. 🌿 #{series} #Mindfulness",
+        ),
+        (
+            "Peace is not found — it is cultivated from within.",
+            "— Thich Nhat Hanh",
+            ["peace", "inner", "calm"],
+            "Peace Lives Inside You",
+            f"Stillness isn't the absence of noise — it's the presence of clarity. #{series} #InnerPeace",
+        ),
+        (
+            "Let stillness be your greatest teacher today.",
+            "— Ancient Proverb",
+            ["stillness", "meditation", "wisdom"],
+            "Let Stillness Teach You",
+            f"Some lessons can only be heard in silence. #{series} #Wisdom",
+        ),
+        (
+            "Every exhale releases what no longer serves you.",
+            "— Unknown",
+            ["breathe", "release", "yoga"],
+            "Breathe and Let It Go",
+            f"Your breath is the one thing you can always return to. 🌬️ #{series} #Breathwork",
+        ),
+        (
+            "Strength grows in the moments you think you cannot go on.",
+            "— Unknown",
+            ["strength", "resilience", "power"],
+            "Strength Grows in Struggle",
+            f"Rock bottom has built more champions than comfort ever has. #{series} #Resilience",
+        ),
+        (
+            "Your body hears everything your mind says — speak kindly.",
+            "— Naomi Judd",
+            ["mindfulness", "body", "mind"],
+            "Speak Kindly to Yourself",
+            f"The words you say to yourself in private shape everything else. #{series} #SelfLove",
+        ),
+        (
+            "Slow down. The present moment is where magic lives.",
+            "— Unknown",
+            ["present", "slow", "magic"],
+            "Magic Hides in the Present",
+            f"We scroll through life looking for meaning that was already right in front of us. ✨ #{series} #Presence",
+        ),
+        (
+            "Growth and comfort cannot coexist.",
+            "— Ginni Rometty",
+            ["growth", "change", "challenge"],
+            "Growth Demands Discomfort",
+            f"Every version of you that you're proud of was born from a moment of discomfort. #{series} #Growth",
+        ),
+        (
+            "Breathe in possibility. Breathe out fear.",
+            "— Unknown",
+            ["breathe", "possibility", "courage"],
+            "Inhale Courage Exhale Fear",
+            f"Fear and possibility cannot occupy the same breath. Try it right now. 🌬️ #{series} #Courage",
+        ),
     ]
     return [
-        {"quote": q, "attribution": attr, "keywords": kw + [topic.lower().split()[0]]}
-        for q, attr, kw in generic[:NUM_QUOTES]
+        {
+            "quote":          q,
+            "attribution":    attr,
+            "keywords":       kw + [topic.lower().split()[0]],
+            "title":          title,
+            "pinned_comment": comment,
+        }
+        for q, attr, kw, title, comment in data[:NUM_QUOTES]
     ]

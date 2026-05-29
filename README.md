@@ -231,7 +231,7 @@ Each video:
 | `FFmpeg not found` | Install FFmpeg and ensure it's in PATH |
 | `No images available` | Check your `PEXELS_API_KEY` or add images manually to `assets/images/` |
 | `Font not found` warning | Download `NotoSans-Bold.ttf` to `fonts/` |
-| YouTube auth loop | Delete `youtube_token.json` and re-authenticate |
+| YouTube auth loop | Delete `<br/>youtube_token.json` and re-authenticate |
 | Claude quota exceeded | Check your Anthropic account; the built-in fallback quotes will be used |
 | Video encoding errors | Run with `LOG_LEVEL=DEBUG` to see the full FFmpeg command |
 

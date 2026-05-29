@@ -1,16 +1,17 @@
 """
 video_builder.py – Build a 40-second vertical YouTube Short.
 
-Timeline:
-  0s   – 4.5s  : Branded intro "CALM / REFLECTIONS" fades in, holds, fades out
-  4.5s – 18s   : Quote reveals line-by-line (fast typewriter)
-  18s  – 30s   : Full quote + attribution hold on screen
-  30s  – 40s   : CTA image (from assets/youtube_CTA/) plays as the final
-                 background image with Ken Burns, subscribe text overlaid
-  38.5s– 40s   : Fade to black
+Background strategy:
+  - Each image is perfectly static (zero motion) — no zoompan, no jitter
+  - Clean cross-dissolve (xfade) transitions between images
+  - Renders 3–4x faster than zoompan
 
-CTA image is simply the last segment in the image sequence — no overlay
-complexity, same Ken Burns treatment as every other image.
+Timeline:
+  0s   – 4.5s  : Branded intro fades in, holds, fades out
+  4.5s – 18s   : Quote reveals line-by-line (typewriter)
+  18s  – 30s   : Full quote + attribution holds
+  30s  – 40s   : CTA image as last segment + subscribe text fades in
+  38.5s– 40s   : Fade to black
 """
 
 import logging
@@ -40,15 +41,18 @@ from config import (
 log = logging.getLogger(__name__)
 
 # ── Timeline (seconds) ────────────────────────────────────────────────────────
-INTRO_FADE_IN   = 1.0
-INTRO_HOLD      = 2.5
-INTRO_FADE_OUT  = 1.0
-INTRO_END       = INTRO_FADE_IN + INTRO_HOLD + INTRO_FADE_OUT   # 4.5s
+INTRO_FADE_IN  = 1.0
+INTRO_HOLD     = 2.5
+INTRO_FADE_OUT = 1.0
+INTRO_END      = INTRO_FADE_IN + INTRO_HOLD + INTRO_FADE_OUT   # 4.5s
 
-QUOTE_START     = INTRO_END          # 4.5s
-QUOTE_REVEAL    = 13.5               # seconds to type out all lines
-CTA_START       = 30.0               # when CTA text fades in
-VIDEO_FADE_OUT  = 1.5
+QUOTE_START    = INTRO_END     # 4.5s
+QUOTE_REVEAL   = 13.5
+CTA_START      = 30.0
+VIDEO_FADE_OUT = 1.5
+
+# ── Cross-dissolve ────────────────────────────────────────────────────────────
+XFADE_DURATION = 0.8   # seconds for dissolve — longer = smoother transition feel
 
 # ── Visual ────────────────────────────────────────────────────────────────────
 TITLE_FONT_SIZE = 110
@@ -57,28 +61,22 @@ QUOTE_FONT_SIZE = 62
 ATTR_FONT_SIZE  = 40
 CTA_FONT_SIZE   = 34
 
-ZOOM_SPEED = 0.0003
-MAX_ZOOM   = 1.12
-
 _CTA_EXTS = {".jpg", ".jpeg", ".png", ".webp"}
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
 
 def pick_cta_image() -> Optional[Path]:
-    """Randomly select one image from assets/youtube_CTA/, or None if empty."""
+    """Randomly select one image from assets/youtube_CTA/."""
     candidates = [
         p for p in CTA_DIR.iterdir()
         if p.is_file() and p.suffix.lower() in _CTA_EXTS
     ]
     if not candidates:
-        log.warning(
-            "No CTA images found in %s – last background image will be reused. "
-            "Add PNG/JPG files there to show a custom CTA background.", CTA_DIR
-        )
+        log.warning("No CTA images in %s – last background image reused.", CTA_DIR)
         return None
     chosen = random.choice(candidates)
-    log.info("CTA image selected: %s", chosen.name)
+    log.info("CTA image: %s", chosen.name)
     return chosen
 
 
@@ -90,24 +88,8 @@ def build_video(
     output_path: Path,
     cta_image: Optional[Path] = None,
 ) -> Path:
-    """
-    Render a 40-second Short.
-
-    The CTA image (if provided) is appended as the final image segment so it
-    plays naturally during the subscribe phase — no overlay, no compositing.
-
-    Args:
-        images      : Ken Burns background images (typically 4)
-        quote       : Main quote text
-        attribution : e.g. "— Rumi"
-        music       : Background track (or None)
-        output_path : Destination MP4
-        cta_image   : Image from assets/youtube_CTA/ used as final segment
-    """
-    ffmpeg = _require_ffmpeg()
-    font   = _font_path()
-
-    # Build the full image sequence: regular images + CTA as last frame
+    ffmpeg     = _require_ffmpeg()
+    font       = _font_path()
     all_images = _build_image_sequence(images, cta_image)
 
     filter_complex = _build_filter(all_images, quote, attribution, font)
@@ -124,47 +106,23 @@ def build_video(
     return output_path
 
 
-# ─── Image sequence builder ───────────────────────────────────────────────────
+# ─── Image sequence ───────────────────────────────────────────────────────────
 
 def _build_image_sequence(
     images: list[Path],
     cta_image: Optional[Path],
 ) -> list[Path]:
-    """
-    Return the full ordered image list for the video.
-
-    Strategy:
-      - The CTA image gets roughly the last 10 seconds (CTA_START → VIDEO_DURATION)
-      - Remaining images share the earlier portion equally
-      - If no CTA image, all images share the full duration as before
-    """
+    """Regular images fill 0–30s, CTA image fills 30–40s."""
     if cta_image is None or not cta_image.exists():
         return list(images)
 
-    # Each segment gets equal time: VIDEO_DURATION / total_segments
-    # We want CTA to cover ~10s and regular images ~30s.
-    # With 4 regular images and 40s total:
-    #   seg_dur = 40 / total_segments
-    #   cta_slots * seg_dur ≈ 10  →  cta_slots ≈ total_segments / 4
-    # Easiest: fix total segments, derive cta_slots from ratio
-    n_other    = len(images)
-    # Start with n_other regular slots, compute how many CTA slots to add
-    # so CTA covers CTA_START → VIDEO_DURATION
-    # seg_dur = VIDEO_DURATION / (n_other + cta_slots)
-    # cta_slots * seg_dur = VIDEO_DURATION - CTA_START
-    # → cta_slots = n_other * (VIDEO_DURATION - CTA_START) / CTA_START
-    cta_duration   = VIDEO_DURATION - CTA_START          # 10s
-    other_duration = CTA_START                            # 30s
-    cta_slots      = max(round(n_other * cta_duration / other_duration), 1)
+    n_other   = len(images)
+    cta_slots = max(round(n_other * (VIDEO_DURATION - CTA_START) / CTA_START), 1)
+    result    = list(images) + [cta_image] * cta_slots
 
-    # Build sequence: cycle regular images, append CTA slots at end
-    other_seq = [images[i % n_other] for i in range(n_other)]
-    cta_seq   = [cta_image] * cta_slots
-
-    result = other_seq + cta_seq
     log.debug(
-        "Image sequence: %d regular slot(s) + %d CTA slot(s) = %d total segments",
-        len(other_seq), len(cta_seq), len(result),
+        "Sequence: %d regular + %d CTA = %d total segments",
+        n_other, cta_slots, len(result),
     )
     return result
 
@@ -177,47 +135,78 @@ def _build_filter(
     attribution: str,
     font: str,
 ) -> str:
-    n          = len(all_images)
-    seg_dur    = VIDEO_DURATION / n
-    seg_frames = int(seg_dur * VIDEO_FPS)
+    n        = len(all_images)
     parts: list[str] = []
-    font_arg   = f":fontfile='{font}'" if font else ""
+    font_arg = f":fontfile='{font}'" if font else ""
 
-    # ── 1. Ken Burns for every image (including CTA) ──────────────────────────
+    # ── Timing ────────────────────────────────────────────────────────────────
+    # With xfade the images overlap at transitions so total wall time stays
+    # exactly VIDEO_DURATION:
+    #
+    #   total = n * seg_dur - (n-1) * XFADE_DURATION = VIDEO_DURATION
+    #   seg_dur = (VIDEO_DURATION + (n-1) * XFADE_DURATION) / n
+    #
+    seg_dur = (VIDEO_DURATION + (n - 1) * XFADE_DURATION) / n
+
+    # ── 1. Scale every image to exact frame size — completely static ──────────
     for i in range(n):
-        if i % 2 == 0:
-            zoom_e = f"min(1+{ZOOM_SPEED}*on,{MAX_ZOOM})"
-            x_e    = "iw/2-(iw/zoom/2)"
-            y_e    = "ih/2-(ih/zoom/2)"
-        else:
-            zoom_e = f"min(1+{ZOOM_SPEED}*on,{MAX_ZOOM})"
-            x_e    = f"iw/2-(iw/zoom/2)+0.03*iw*(on/{seg_frames})"
-            y_e    = "ih/2-(ih/zoom/2)"
-
         parts.append(
             f"[{i}:v]"
             f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
             f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},"
             f"setsar=1,"
-            f"zoompan=z='{zoom_e}':x='{x_e}':y='{y_e}'"
-            f":d={seg_frames}:s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={VIDEO_FPS},"
-            f"trim=duration={seg_dur:.3f},"
-            f"setpts=PTS-STARTPTS"
-            f"[v{i}];"
+            f"setpts=PTS-STARTPTS,"
+            f"fps=fps={VIDEO_FPS}"
+            f"[img{i}];"
         )
 
-    # ── 2. Concatenate all segments ───────────────────────────────────────────
-    concat_in = "".join(f"[v{i}]" for i in range(n))
-    parts.append(f"{concat_in}concat=n={n}:v=1:a=0[base];")
+    # ── 2. Chain xfade dissolves ──────────────────────────────────────────────
+    # xfade offset = time at which the TRANSITION STARTS.
+    # For image i (0-based), its segment starts at i*(seg_dur - XFADE_DURATION)
+    # and the transition to the NEXT image starts at the end of image i's
+    # unique (non-overlapping) portion.
+    #
+    # offset_i = i * (seg_dur - XFADE_DURATION)
+    #
+    # We chain pairs: [prev][imgN] → xfade → [xfN]
+    # The output of each xfade is the accumulated video up to that point,
+    # so the offset is cumulative from the START of the whole stream.
 
-    # ── 3. Global fade-out ────────────────────────────────────────────────────
+    if n == 1:
+        parts.append("[img0]copy[base];")
+    else:
+        # First transition: img0 → img1
+        offset_0 = seg_dur - XFADE_DURATION
+        parts.append(
+            f"[img0][img1]"
+            f"xfade=transition=dissolve"
+            f":duration={XFADE_DURATION:.3f}"
+            f":offset={offset_0:.4f}"
+            f"[xf1];"
+        )
+        for i in range(2, n):
+            in_label  = f"[xf{i-1}]"
+            out_label = f"[xf{i}]" if i < n - 1 else "[base]"
+            # Each subsequent offset advances by one non-overlapping segment
+            offset_i  = i * (seg_dur - XFADE_DURATION)
+            parts.append(
+                f"{in_label}[img{i}]"
+                f"xfade=transition=dissolve"
+                f":duration={XFADE_DURATION:.3f}"
+                f":offset={offset_i:.4f}"
+                f"{out_label};"
+            )
+
+    # ── 3. Trim to exact duration + global video fade-out ─────────────────────
     parts.append(
         f"[base]"
-        f"fade=t=out:st={VIDEO_DURATION - VIDEO_FADE_OUT:.3f}:d={VIDEO_FADE_OUT}"
+        f"trim=duration={VIDEO_DURATION:.3f},"
+        f"setpts=PTS-STARTPTS,"
+        f"fade=t=out:st={VIDEO_DURATION - VIDEO_FADE_OUT:.3f}:d={VIDEO_FADE_OUT:.3f}"
         f"[bg];"
     )
 
-    # ── 4. Branded intro ──────────────────────────────────────────────────────
+    # ── 4. Branded intro overlay ──────────────────────────────────────────────
     title_alpha = _alpha_window(0, INTRO_FADE_IN, INTRO_FADE_IN + INTRO_HOLD, INTRO_END)
     parts.append(
         f"[bg]"
@@ -234,12 +223,12 @@ def _build_filter(
         f"[branded];"
     )
 
-    # ── 5. Quote — fast typewriter line-by-line ───────────────────────────────
-    wrapped_lines = _wrap_quote(quote, width=24)
+    # ── 5. Quote — line-by-line typewriter reveal ─────────────────────────────
+    wrapped_lines = _wrap_quote(quote)
     n_lines       = len(wrapped_lines)
     line_height   = QUOTE_FONT_SIZE * 1.55
     total_text_h  = n_lines * line_height
-    base_y_offset = int((VIDEO_HEIGHT - total_text_h) / 2) - 60
+    base_y        = int((VIDEO_HEIGHT - total_text_h) / 2) - 60
     time_per_line = QUOTE_REVEAL / max(n_lines, 1)
 
     current = "[branded]"
@@ -251,7 +240,7 @@ def _build_filter(
             f"if(lt(t,{line_start + ramp:.3f})"
             f",(t-{line_start:.3f})/{ramp:.3f},1))"
         )
-        y_expr  = f"{base_y_offset}+{int(li * line_height)}"
+        y_expr  = f"{base_y}+{int(li * line_height)}"
         out_lbl = f"[ql{li}]" if li < n_lines - 1 else "[withquote]"
 
         parts.append(
@@ -273,7 +262,7 @@ def _build_filter(
         f"if(lt(t,{attr_start + attr_ramp:.3f})"
         f",(t-{attr_start:.3f})/{attr_ramp:.3f},1))"
     )
-    attr_y = base_y_offset + int(n_lines * line_height) + 20
+    attr_y = base_y + int(n_lines * line_height) + 20
 
     parts.append(
         f"[withquote]"
@@ -285,7 +274,7 @@ def _build_filter(
         f"[withattr];"
     )
 
-    # ── 7. CTA text (fades in at CTA_START over the CTA image) ───────────────
+    # ── 7. CTA text ───────────────────────────────────────────────────────────
     cta_ramp  = 1.0
     cta_alpha = (
         f"if(lt(t,{CTA_START:.3f}),0,"
@@ -322,12 +311,16 @@ def _build_command(
 ) -> list:
     cmd: list = [ffmpeg, "-y"]
 
+    # Give each image slightly more than its segment duration so xfade
+    # never runs out of frames. seg_dur + XFADE_DURATION is a safe ceiling.
+    seg_dur   = (VIDEO_DURATION + (len(all_images) - 1) * XFADE_DURATION) / len(all_images)
+    img_dur   = seg_dur + XFADE_DURATION + 0.5   # 0.5s extra safety margin
+
     for img in all_images:
-        cmd += ["-loop", "1", "-i", str(img)]
+        cmd += ["-loop", "1", "-t", f"{img_dur:.3f}", "-i", str(img)]
 
     has_music   = music and Path(music).exists()
     music_index = len(all_images)
-
     if has_music:
         cmd += ["-i", str(music)]
 
