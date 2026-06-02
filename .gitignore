@@ -10,7 +10,7 @@ youtube_comment_token.json
 assets/images/
 assets/cache.json
 output/
-
+assets/music/
 # Python
 __pycache__/
 *.py[cod]
