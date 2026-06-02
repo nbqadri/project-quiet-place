@@ -1,8 +1,9 @@
 # YouTube Shorts Auto-Generator — Calm Reflections
 
 Automatically generate, render, and upload branded YouTube Shorts from a single topic.
-Each video features an AI-generated quote, stock images, background music, a branded intro,
-letter-by-letter quote reveal, and a call-to-action segment.
+Each video features an AI-generated quote, stock images with cross-dissolve transitions,
+background music, a branded intro, letter-by-letter quote reveal, attribution, and a
+call-to-action segment.
 
 ---
 
@@ -10,34 +11,39 @@ letter-by-letter quote reveal, and a call-to-action segment.
 
 ```
 youtube_shorts_generator/
-├── main.py                   # CLI entry-point and pipeline orchestrator
-├── config.py                 # All settings loaded from .env
-├── claude_generator.py       # Generates quotes, titles, and pinned comments via Claude API
-├── asset_fetcher.py          # Downloads and caches images from Pexels (100 per batch)
-├── music_selector.py         # Matches local music tracks to topic via keyword scoring
-├── video_builder.py          # FFmpeg rendering: static images + xfade + text overlays
-├── youtube_uploader.py       # OAuth2 upload, playlist, scheduling, comments
+├── main.py                       # CLI entry-point and pipeline orchestrator
+├── config.py                     # All settings loaded from .env
+├── claude_generator.py           # Generates quotes, titles, pinned comments via Claude API
+├── asset_fetcher.py              # Downloads and caches images from Pexels (100 per batch)
+├── music_selector.py             # Matches local music tracks to topic via keyword scoring
+├── video_builder.py              # FFmpeg rendering: xfade transitions + text overlays
+├── youtube_uploader.py           # OAuth2 upload, playlist, scheduling, comments
 ├── requirements.txt
-├── .env.example              # Copy to .env and fill in your keys
-├── pending_comments.json     # Auto-created: stores pinned comments for scheduled videos
-├── youtube_token.json        # Auto-created after first OAuth login
-├── client_secrets.json       # Download from Google Cloud Console (not in repo)
+├── .env.example                  # Copy to .env and fill in your keys
+│
+├── pending_comments.json         # Auto-created: stores pinned comments for scheduled videos
+├── youtube_token.json            # Auto-created: upload/playlist token (device flow)
+├── youtube_comment_token.json    # Auto-created: comment token (browser flow)
+├── client_secrets.json           # TV & Limited Input devices credential (upload)
+├── client_secrets_comments.json  # Web application credential (comments)
 │
 ├── assets/
-│   ├── images/               # Downloaded images, one subfolder per topic
-│   │   └── yoga_music/       # e.g. assets/images/yoga_music/1234567.jpg
-│   ├── music/                # Your local MP3/WAV tracks from YouTube Audio Library
-│   │   └── music_tags.json   # Optional: tag tracks by mood for smart matching
-│   └── youtube_CTA/          # Images used as the final video segment (CTA background)
+│   ├── images/                   # Downloaded images, one subfolder per topic
+│   │   └── yoga_music/           # assets/images/yoga_music/1234567.jpg
+│   ├── music/                    # Local MP3/WAV tracks from YouTube Audio Library
+│   │   └── music_tags.json       # Optional: tag tracks by mood for smart matching
+│   └── youtube_CTA/              # Images used as the final video segment (CTA background)
 │
 ├── fonts/
-│   └── NotoSans-Bold.ttf     # Optional: custom font (falls back to Georgia/Arial)
+│   └── NotoSans-Bold.ttf         # Optional: falls back to Georgia → Arial → DejaVu
 │
-└── output/                   # Rendered MP4s, organised by topic
+└── output/                       # Rendered MP4s organised by topic
     └── yoga_music/
-        ├── Yoga_Music_01.mp4
+        ├── Yoga_Music_01.mp4     # Rendered video
+        ├── Yoga_Music_01.json    # Companion metadata (title, description, tags, comment)
         └── uploaded/
-            └── Yoga_Music_02.mp4   ← moved here after confirmed upload
+            ├── Yoga_Music_02.mp4 # Moved here after confirmed upload
+            └── Yoga_Music_02.json
 ```
 
 ---
@@ -67,7 +73,7 @@ pip install -r requirements.txt
 
 Verify: `ffmpeg -version`
 
-### 3. Optional: Add a font
+### 3. Optional — Add a font
 
 Download **NotoSans-Bold.ttf** or **Georgia.ttf** and place in `fonts/`.
 Falls back to system fonts automatically (Georgia → Arial → DejaVu).
@@ -85,14 +91,36 @@ Falls back to system fonts automatically (Georgia → Arial → DejaVu).
 1. Sign up at https://www.pexels.com/api/ (free)
 2. Add to `.env`: `PEXELS_API_KEY=xxx`
 
-### YouTube Data API v3 (required for upload)
-1. Go to https://console.cloud.google.com/
-2. Create a project → Enable **YouTube Data API v3**
-3. APIs & Services → Credentials → **+ Create Credentials → OAuth 2.0 Client ID**
-4. Application type: **TV and Limited Input devices** ← important
-5. Download JSON → save as `client_secrets.json` in project root
-6. OAuth consent screen → add scope: `https://www.googleapis.com/auth/youtube`
-7. Publish the app (or add your Gmail as a test user)
+### YouTube — Two separate OAuth credentials are required
+
+#### Credential 1 — Upload + Playlist (TV & Limited Input devices)
+Used for: uploading videos, adding to playlist, scheduling
+
+1. [console.cloud.google.com](https://console.cloud.google.com) → Enable **YouTube Data API v3**
+2. APIs & Services → Credentials → **+ Create Credentials → OAuth 2.0 Client ID**
+3. Application type: **TV and Limited Input devices**
+4. Download JSON → save as `client_secrets.json`
+5. OAuth consent screen → add scope: `https://www.googleapis.com/auth/youtube`
+6. Publish the app (or add your Gmail as a test user)
+
+#### Credential 2 — Comments (Web application)
+Used for: posting and pinning comments (`youtube.force-ssl` scope is blocked in device flow)
+
+1. Same project → **+ Create Credentials → OAuth 2.0 Client ID**
+2. Application type: **Web application**
+3. Authorised redirect URIs → add: `http://localhost:8080`
+4. Download JSON → save as `client_secrets_comments.json`
+5. OAuth consent screen → add scope: `https://www.googleapis.com/auth/youtube.force-ssl`
+
+#### Why two credentials?
+Google permanently blocks the `youtube.force-ssl` scope from the device code flow (TV credential).
+The only way to obtain it is via a browser redirect, which requires a Web application credential.
+Both tokens are saved locally and refresh automatically — the browser prompt is one-time only.
+
+| Token file | Credential type | Scope | Used for |
+|------------|----------------|-------|---------|
+| `youtube_token.json` | TV & Limited Input | `youtube` | Upload, playlist |
+| `youtube_comment_token.json` | Web application | `youtube.force-ssl` | Post + pin comments |
 
 ---
 
@@ -104,7 +132,10 @@ Copy `.env.example` → `.env` and fill in:
 # Required
 ANTHROPIC_API_KEY=sk-ant-xxxxxxxx
 PEXELS_API_KEY=xxxxxxxx
+
+# YouTube credentials
 YOUTUBE_CLIENT_SECRETS_FILE=client_secrets.json
+YOUTUBE_COMMENT_SECRETS_FILE=client_secrets_comments.json
 
 # Branding
 BRAND_TITLE=CALM
@@ -120,9 +151,9 @@ YOUTUBE_SCHEDULE=true
 YOUTUBE_SCHEDULE_MIN_DAYS=1
 YOUTUBE_SCHEDULE_MAX_DAYS=10
 
-# Related videos — one is linked randomly in each video description
-# Use just the video ID from the URL (the part after ?v= or youtu.be/)
-YOUTUBE_RELATED_VIDEO_IDS=Ui9w4VEH3iA,xxxxxxx,yyyyyyy
+# Related videos — one linked randomly in each video description
+# Use just the video ID from the URL (after ?v= or youtu.be/)
+YOUTUBE_RELATED_VIDEO_IDS=abc123xyz,def456uvw,ghi789rst
 
 # Logging
 LOG_LEVEL=INFO
@@ -134,7 +165,7 @@ LOG_LEVEL=INFO
 
 1. Download free tracks from https://www.youtube.com/audiolibrary
 2. Place `.mp3` files in `assets/music/`
-3. Optionally edit `assets/music/music_tags.json` to tag tracks by mood:
+3. Optionally tag tracks in `assets/music/music_tags.json`:
 
 ```json
 {
@@ -151,13 +182,13 @@ Without tags the system matches on filenames, then picks randomly.
 
 Place PNG/JPG images in `assets/youtube_CTA/`.
 One is picked randomly per run and used as the **final background image** during the
-subscribe segment (last ~8 seconds). Design at 1080×1920px for best results.
+subscribe segment (last ~8 seconds of the video). Design at 1080×1920px for best results.
 
 ---
 
 ## Usage
 
-### Generate and upload videos
+### Generate and upload
 ```bash
 python main.py --topic "Yoga Music"
 ```
@@ -166,15 +197,13 @@ python main.py --topic "Yoga Music"
 ```bash
 python main.py --topic "Morning Motivation" --no-upload
 ```
-A companion `.json` file is saved alongside each `.mp4` containing the title,
-description, tags, quote, and pinned comment — ready for upload later.
+A companion `.json` is saved alongside each `.mp4` with all metadata ready for upload.
 
 ### Upload already-rendered videos
 ```bash
 python main.py --topic "Morning Motivation" --upload-only
 ```
-Scans `output/morning_motivation/` for any unuploaded `.mp4` files, reads their
-companion `.json` for metadata, uploads each one, and moves them to `uploaded/`.
+Reads companion `.json` files, uploads each unuploaded MP4, moves to `uploaded/`.
 No re-rendering, no Claude or Pexels API calls.
 
 ### Specify number of videos
@@ -192,10 +221,12 @@ python main.py --topic "Daily Affirmations" --privacy unlisted
 python main.py --topic "Yoga Music" --upload-only --privacy private
 ```
 
-### Post pending pinned comments (run after scheduled videos go live)
+### Post pending pinned comments
 ```bash
 python main.py --post-comments
 ```
+Checks each pending comment against the YouTube API. Posts and pins comments for
+videos that are now public. Skips videos still private/scheduled. Safe to run daily.
 
 ---
 
@@ -207,9 +238,12 @@ python main.py --post-comments
 | 1s – 3.5s | Brand holds on screen |
 | 3.5s – 4.5s | Brand fades out |
 | 4.5s – 18s | Quote appears line-by-line (typewriter effect) |
-| 18s – 30s | Full quote + attribution holds |
-| 30s – 40s | CTA image appears, subscribe text fades in |
+| 18s – 30s | Full quote + attribution holds on screen |
+| 30s – 40s | CTA image plays, subscribe text fades in |
 | 38.5s – 40s | Fade to black |
+
+Background images are completely static with smooth cross-dissolve (xfade) transitions
+between them — no zoom/pan effects that cause jitter.
 
 ---
 
@@ -227,21 +261,20 @@ The pool grows over time — old images are never deleted.
 
 ---
 
-## Output Structure
+## Output & Metadata
 
 ```
 output/
 ├── yoga_music/
-│   ├── Yoga_Music_01.mp4       ← rendered, pending upload
-│   ├── Yoga_Music_01.json      ← metadata: title, description, quote, pinned comment
+│   ├── Yoga_Music_01.mp4         ← rendered, not yet uploaded
+│   ├── Yoga_Music_01.json        ← companion metadata
 │   └── uploaded/
-│       ├── Yoga_Music_02.mp4   ← moved here after confirmed YouTube upload
-│       └── Yoga_Music_02.json  ← companion JSON moved alongside MP4
-└── morning_motivation/
-    └── ...
+│       ├── Yoga_Music_02.mp4     ← moved here after confirmed upload
+│       └── Yoga_Music_02.json    ← moved alongside MP4, updated with video_id
 ```
 
-Each `.json` contains:
+Each `.json` contains everything needed for upload and post-processing:
+
 ```json
 {
   "topic":          "Yoga Music",
@@ -263,14 +296,17 @@ Each `.json` contains:
 ## Scheduled Uploads & Pinned Comments
 
 When `YOUTUBE_SCHEDULE=true`:
-- Video uploads as **private** with a `publishAt` timestamp (random 1–10 days)
+- Video uploads as **private** with a `publishAt` timestamp (random 1–10 days, random hour 8am–8pm UTC)
 - YouTube automatically makes it public at that time
-- Pinned comment is saved to `pending_comments.json` (can't post on private videos)
-- Run `python main.py --post-comments` after videos go live to post + pin them
+- Pinned comment is saved to `pending_comments.json` — cannot be posted on private videos
+- Run `python main.py --post-comments` after videos go live to post and pin them
+- The script checks actual video status via the YouTube API — no timestamp guessing
 
 ---
 
 ## Quota Usage (YouTube Data API v3)
+
+Free daily quota: **10,000 units** — resets at midnight Pacific Time.
 
 | Action | Quota units |
 |--------|------------|
@@ -280,7 +316,8 @@ When `YOUTUBE_SCHEDULE=true`:
 | Pin comment | 50 |
 | **Total per video** | **~1,750** |
 
-Free daily quota: **10,000 units** → approximately **5 videos per day**.
+Approximately **5 videos per day** on the free tier.
+Monitor usage: Google Cloud Console → APIs & Services → YouTube Data API v3 → Quotas.
 
 ---
 
@@ -288,12 +325,12 @@ Free daily quota: **10,000 units** → approximately **5 videos per day**.
 
 | File | Responsibility |
 |------|---------------|
-| `config.py` | All settings, paths, env vars |
-| `claude_generator.py` | Claude API: quote, attribution, title, keywords, pinned comment |
+| `config.py` | All settings, paths, env vars — single source of truth |
+| `claude_generator.py` | Claude API: quote, attribution, title, keywords, pinned comment per video |
 | `asset_fetcher.py` | Pexels download with pagination, 100-image batches, 30-day refresh |
-| `music_selector.py` | Keyword scoring against music_tags.json, filename fallback, random |
+| `music_selector.py` | Keyword scoring against music_tags.json, filename fallback, random pick |
 | `video_builder.py` | FFmpeg filter graph: xfade transitions, drawtext overlays, audio mix |
-| `youtube_uploader.py` | OAuth2 device flow, upload, playlist, scheduling, comments |
+| `youtube_uploader.py` | Two-token OAuth, upload, playlist, scheduling, comments, pending comment check |
 | `main.py` | CLI, pipeline orchestration, metadata JSON saving, upload-only mode |
 
 ---
@@ -305,13 +342,16 @@ Free daily quota: **10,000 units** → approximately **5 videos per day**.
 | `FFmpeg not found` | Install FFmpeg and add to PATH |
 | `No images available` | Check `PEXELS_API_KEY` or add images to `assets/images/<topic>/` |
 | `Font not found` warning | Add `NotoSans-Bold.ttf` to `fonts/` folder |
-| YouTube 400 on auth | Make sure credential type is **TV and Limited Input devices** |
-| YouTube 403 on playlist/comment | Scope must be `https://www.googleapis.com/auth/youtube` — delete `youtube_token.json` and re-auth |
-| Comments 403 | Enable comments in YouTube Studio → Settings → Community |
-| Pinned comment not posted | Video was scheduled — run `python main.py --post-comments` after it goes live |
+| YouTube 400 on device auth | Credential type must be **TV and Limited Input devices** for `client_secrets.json` |
+| YouTube 403 on upload/playlist | Delete `youtube_token.json` and re-authenticate |
+| YouTube 403 on comments | Ensure `client_secrets_comments.json` exists (Web application type) and delete `youtube_comment_token.json` to re-authenticate |
+| Comments still 403 after re-auth | Revoke app access at myaccount.google.com/permissions then re-authenticate |
+| `force-ssl` invalid_scope error | This scope cannot be used with device flow — always use Web application credential for comments |
+| Pinned comment not posted | Video is still scheduled — run `python main.py --post-comments` after it goes live |
 | `--upload-only` skips a video | No companion `.json` found — only works for videos rendered by this tool |
-| Claude JSON parse error | Increase `CLAUDE_MAX_TOKENS` in `config.py` (should be 4096) |
-| Only 20 images downloaded | Old `asset_fetcher.py` — replace with latest version |
+| Claude JSON parse error | Increase `CLAUDE_MAX_TOKENS` to 4096 in `config.py` |
+| Emoji encoding error on Windows | Ensure `encoding="utf-8"` in `save_metadata` and `load_metadata` in `main.py` |
+| Only 20 images downloaded | Old `asset_fetcher.py` — replace with latest version (should be 100) |
 
 ---
 
