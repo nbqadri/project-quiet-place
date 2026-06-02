@@ -1,7 +1,7 @@
 # Environment & secrets
 .env
-./client_secrets.json
-./client_secrets_comments.json
+client_secrets.json
+client_secrets_comments.json
 
 youtube_token.json
 youtube_comment_token.json
@@ -35,7 +35,7 @@ env/
 .DS_Store
 Thumbs.db
 # no need to push images etc to git
-./assets/
-./output/
+.assets/
+.output/
 
 
