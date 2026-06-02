@@ -2,19 +2,24 @@
 asset_fetcher.py – Download and cache images from Pexels.
 
 Folder structure:
-    assets/images/<topic_slug>/   ← one folder per topic
+    assets/images/<topic_slug>/
         1234567.jpg
         8901234.jpg
-        ...
+        batch_meta.json   ← tracks when each batch was downloaded
 
-If a topic folder already exists and has enough images, downloads are skipped.
-Quotes are always freshly generated (handled in claude_generator.py).
+Batch logic:
+  - First run: download IMAGE_BATCH_SIZE (100) images
+  - If most recent batch is older than IMAGE_REFRESH_DAYS (30): download another
+    100 WITHOUT deleting old ones — pool just gets bigger over time
+  - Each video picks IMAGES_PER_VIDEO (4) images randomly from the full pool
+  - Cross-video duplicates avoided within a single run via used_ids set
 """
 
 import json
 import logging
 import re
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -26,22 +31,22 @@ from config import (
     PEXELS_PER_PAGE,
     IMAGES_DIR,
     IMAGES_PER_VIDEO,
+    IMAGE_BATCH_SIZE,
+    IMAGE_REFRESH_DAYS,
     MAX_RETRIES,
     RETRY_DELAY,
 )
 
 log = logging.getLogger(__name__)
 
-# Minimum images we want cached per topic before skipping download
-MIN_IMAGES_PER_TOPIC = 20
+_BATCH_META_FILE = "batch_meta.json"
+_IMG_EXTS        = {".jpg", ".jpeg", ".png"}
 
 
 # ─── Public API ───────────────────────────────────────────────────────────────
 
 def topic_image_dir(topic: str) -> Path:
-    """Return (and create) the image subfolder for this topic."""
-    slug = _slugify(topic)
-    folder = IMAGES_DIR / slug
+    folder = IMAGES_DIR / _slugify(topic)
     folder.mkdir(parents=True, exist_ok=True)
     return folder
 
@@ -53,103 +58,135 @@ def fetch_images(
     count: int = IMAGES_PER_VIDEO,
 ) -> list[Path]:
     """
-    Return *count* image Paths for the given topic.
+    Return *count* image Paths for the topic.
 
-    - If the topic folder already has >= MIN_IMAGES_PER_TOPIC images, skip download.
-    - Otherwise fetch from Pexels and save into assets/images/<topic_slug>/.
-    - Always avoids IDs already used in this run (used_ids).
+    Downloads a fresh batch of IMAGE_BATCH_SIZE if:
+      - No images exist yet (first run)
+      - Most recent batch is older than IMAGE_REFRESH_DAYS days
+
+    Old images are NEVER deleted — the pool grows over time.
     """
     folder = topic_image_dir(topic)
+    meta   = _load_meta(folder)
+
+    # ── Decide whether to download ────────────────────────────────────────────
     existing = _images_in_folder(folder)
 
-    if len(existing) >= MIN_IMAGES_PER_TOPIC:
+    if not existing:
+        log.info("Topic '%s': no images yet — downloading first batch of %d.", topic, IMAGE_BATCH_SIZE)
+        _download_batch(keywords, topic, folder, meta)
+    elif _batch_is_stale(meta):
+        age_days = _latest_batch_age_days(meta)
         log.info(
-            "Topic '%s' already has %d cached images – skipping download.",
-            topic, len(existing),
+            "Topic '%s': images are %d days old (threshold: %d) — downloading fresh batch. "
+            "Existing %d images kept.",
+            topic, age_days, IMAGE_REFRESH_DAYS, len(existing),
         )
+        _download_batch(keywords, topic, folder, meta)
     else:
-        if PEXELS_API_KEY:
-            log.info(
-                "Topic '%s' has %d images (need %d) – fetching from Pexels …",
-                topic, len(existing), MIN_IMAGES_PER_TOPIC,
-            )
-            _fetch_from_pexels(keywords, topic, folder, existing)
-            existing = _images_in_folder(folder)   # refresh after download
-        else:
-            log.warning("PEXELS_API_KEY not set – using whatever is cached.")
-
-    # Pick *count* images not already used this run
-    selected = _pick_unused(existing, used_ids, count)
-
-    # If still short, allow reuse from the folder (different video same topic)
-    if len(selected) < count:
-        log.debug("Not enough unused images; allowing reuse from topic folder.")
-        selected = _pick_any(existing, count)
-
-    if not selected:
-        raise RuntimeError(
-            f"No images available for topic '{topic}'. "
-            f"Check your PEXELS_API_KEY or add images manually to {folder}."
+        age_days = _latest_batch_age_days(meta)
+        log.info(
+            "Topic '%s': %d cached images (%d days old) — skipping download.",
+            topic, len(existing), age_days,
         )
 
-    log.info("Selected %d image(s) from %s", len(selected), folder)
-    return selected[:count]
+    # Refresh list after potential download
+    existing = _images_in_folder(folder)
+
+    if not existing:
+        raise RuntimeError(
+            f"No images for topic '{topic}'. Check PEXELS_API_KEY or add images to {folder}."
+        )
+
+    # ── Select images for this video ──────────────────────────────────────────
+    unused = [p for p in existing if p.stem not in used_ids]
+
+    if len(unused) < count:
+        # Pool exhausted for this run — allow reuse
+        log.debug("Image pool nearly exhausted; allowing reuse.")
+        unused = existing
+
+    import random
+    selected = random.sample(unused, min(count, len(unused)))
+    log.info("Selected %d/%d images from pool for topic '%s'", len(selected), len(existing), topic)
+    return selected
 
 
 def register_used(paths: list[Path], used_ids: set[str]) -> None:
-    """Record file stems so future videos in this run avoid duplicates."""
     for p in paths:
         used_ids.add(p.stem)
 
 
-# ─── Pexels fetch ─────────────────────────────────────────────────────────────
+# ─── Download ─────────────────────────────────────────────────────────────────
 
-def _fetch_from_pexels(
+def _download_batch(
     keywords: list[str],
     topic: str,
     folder: Path,
-    existing: list[Path],
+    meta: dict,
 ) -> None:
-    existing_ids = {p.stem for p in existing}
-    needed = MIN_IMAGES_PER_TOPIC - len(existing)
-    downloaded = 0
-
-    # Try topic first, then individual keywords as fallback queries
-    queries = [topic] + [" ".join(keywords[:3])] + keywords[:5]
-    queries = list(dict.fromkeys(q.strip() for q in queries if q.strip()))
+    """Download up to IMAGE_BATCH_SIZE images into folder, skipping existing IDs."""
+    existing_ids = {p.stem for p in _images_in_folder(folder)}
+    queries      = _build_queries(keywords, topic)
+    downloaded   = 0
+    target       = IMAGE_BATCH_SIZE
 
     for query in queries:
-        if downloaded >= needed:
+        if downloaded >= target:
             break
 
-        headers = {"Authorization": PEXELS_API_KEY}
-        params  = {"query": query, "per_page": PEXELS_PER_PAGE, "orientation": "portrait"}
-
-        photos = []
-        for attempt in range(1, MAX_RETRIES + 1):
-            try:
-                resp = requests.get(PEXELS_PHOTO_URL, headers=headers, params=params, timeout=20)
-                resp.raise_for_status()
-                photos = resp.json().get("photos", [])
+        page = 1
+        while downloaded < target:
+            photos = _pexels_search(query, page)
+            if not photos:
                 break
-            except Exception as exc:
-                log.warning("Pexels attempt %d/%d for '%s': %s", attempt, MAX_RETRIES, query, exc)
-                if attempt < MAX_RETRIES:
-                    time.sleep(RETRY_DELAY)
 
-        for photo in photos:
-            if downloaded >= needed:
+            for photo in photos:
+                if downloaded >= target:
+                    break
+                pid = str(photo["id"])
+                if pid in existing_ids:
+                    continue
+                url  = photo["src"].get("large2x") or photo["src"].get("original")
+                dest = folder / f"{pid}.jpg"
+                if _download_file(url, dest):
+                    existing_ids.add(pid)
+                    downloaded += 1
+
+            # Move to next page if Pexels has more results
+            if len(photos) < PEXELS_PER_PAGE:
                 break
-            pid = str(photo["id"])
-            if pid in existing_ids:
-                continue
-            url  = photo["src"].get("large2x") or photo["src"].get("original")
-            dest = folder / f"{pid}.jpg"
-            if _download_file(url, dest):
-                existing_ids.add(pid)
-                downloaded += 1
+            page += 1
 
     log.info("Downloaded %d new image(s) for topic '%s'.", downloaded, topic)
+
+    # Record this batch timestamp
+    now = datetime.now(timezone.utc).isoformat()
+    if "batches" not in meta:
+        meta["batches"] = []
+    meta["batches"].append({"downloaded_at": now, "count": downloaded})
+    _save_meta(folder, meta)
+
+
+def _pexels_search(query: str, page: int = 1) -> list[dict]:
+    if not PEXELS_API_KEY:
+        return []
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            resp = requests.get(
+                PEXELS_PHOTO_URL,
+                headers={"Authorization": PEXELS_API_KEY},
+                params={"query": query, "per_page": PEXELS_PER_PAGE,
+                        "orientation": "portrait", "page": page},
+                timeout=20,
+            )
+            resp.raise_for_status()
+            return resp.json().get("photos", [])
+        except Exception as exc:
+            log.warning("Pexels attempt %d/%d for '%s': %s", attempt, MAX_RETRIES, query, exc)
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY)
+    return []
 
 
 def _download_file(url: str, dest: Path) -> bool:
@@ -164,34 +201,65 @@ def _download_file(url: str, dest: Path) -> bool:
         return False
 
 
-# ─── Selection helpers ────────────────────────────────────────────────────────
+# ─── Batch metadata ───────────────────────────────────────────────────────────
+
+def _load_meta(folder: Path) -> dict:
+    path = folder / _BATCH_META_FILE
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            pass
+    return {"batches": []}
+
+
+def _save_meta(folder: Path, meta: dict) -> None:
+    (folder / _BATCH_META_FILE).write_text(json.dumps(meta, indent=2))
+
+
+def _batch_is_stale(meta: dict) -> bool:
+    """True if the most recent batch is older than IMAGE_REFRESH_DAYS."""
+    batches = meta.get("batches", [])
+    if not batches:
+        return True
+    latest_str = batches[-1].get("downloaded_at", "")
+    if not latest_str:
+        return True
+    try:
+        latest = datetime.fromisoformat(latest_str)
+        age    = (datetime.now(timezone.utc) - latest).days
+        return age >= IMAGE_REFRESH_DAYS
+    except Exception:
+        return True
+
+
+def _latest_batch_age_days(meta: dict) -> int:
+    batches = meta.get("batches", [])
+    if not batches:
+        return 999
+    try:
+        latest = datetime.fromisoformat(batches[-1]["downloaded_at"])
+        return (datetime.now(timezone.utc) - latest).days
+    except Exception:
+        return 999
+
+
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _images_in_folder(folder: Path) -> list[Path]:
     return sorted(
         p for p in folder.iterdir()
-        if p.is_file() and p.suffix.lower() in {".jpg", ".jpeg", ".png"}
+        if p.is_file() and p.suffix.lower() in _IMG_EXTS
     )
 
 
-def _pick_unused(images: list[Path], used_ids: set[str], count: int) -> list[Path]:
-    return [p for p in images if p.stem not in used_ids][:count]
+def _build_queries(keywords: list[str], topic: str) -> list[str]:
+    queries = [topic, " ".join(keywords[:3])] + keywords[:5]
+    return list(dict.fromkeys(q.strip() for q in queries if q.strip()))
 
-
-def _pick_any(images: list[Path], count: int) -> list[Path]:
-    """Return up to *count* images, cycling if necessary."""
-    if not images:
-        return []
-    result = []
-    while len(result) < count:
-        result.extend(images)
-    return result[:count]
-
-
-# ─── Slug helper ──────────────────────────────────────────────────────────────
 
 def _slugify(text: str) -> str:
-    """Convert a topic string to a safe folder name: 'Yoga Music' → 'yoga_music'."""
     text = text.lower().strip()
     text = re.sub(r"[^\w\s-]", "", text)
     text = re.sub(r"[\s-]+", "_", text)
-    return text[:60]   # cap length for Windows path limits
+    return text[:60]

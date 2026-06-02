@@ -1,7 +1,10 @@
 # Environment & secrets
 .env
 client_secrets.json
+client_secrets_comments.json
+
 youtube_token.json
+youtube_comment_token.json
 
 # Generated assets & output
 assets/images/
@@ -34,3 +37,5 @@ Thumbs.db
 # no need to push images etc to git
 .assets/
 .output/
+
+

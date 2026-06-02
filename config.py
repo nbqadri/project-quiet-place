@@ -24,6 +24,9 @@ PEXELS_API_KEY: str    = os.getenv("PEXELS_API_KEY", "")
 YOUTUBE_CLIENT_SECRETS_FILE: str = os.getenv(
     "YOUTUBE_CLIENT_SECRETS_FILE", "client_secrets.json"
 )
+YOUTUBE_COMMENT_SECRETS_FILE: str = os.getenv(
+    "YOUTUBE_COMMENT_SECRETS_FILE", "client_secrets_comments.json"
+)
 
 # ─── Paths ────────────────────────────────────────────────────────────────────
 BASE_DIR   = Path(__file__).parent.resolve()
@@ -39,7 +42,7 @@ for _dir in (IMAGES_DIR, MUSIC_DIR, OUTPUT_DIR, FONTS_DIR, CTA_DIR):
 
 # ─── Claude ───────────────────────────────────────────────────────────────────
 CLAUDE_MODEL      = "claude-sonnet-4-5"
-CLAUDE_MAX_TOKENS = 4096
+CLAUDE_MAX_TOKENS = 4096   # increased — 5 fields × 9 quotes needs more headroom
 NUM_QUOTES        = 9
 
 # ─── Pexels ───────────────────────────────────────────────────────────────────
@@ -70,10 +73,16 @@ BRAND_SUBTITLE = os.getenv("BRAND_SUBTITLE", "REFLECTIONS")
 CTA_TEXT       = os.getenv("CTA_TEXT",       "Subscribe for daily reflections")
 
 # ─── YouTube ──────────────────────────────────────────────────────────────────
+# Scopes for upload token (device flow — TV and Limited Input devices credential)
 YOUTUBE_SCOPES = [
-    "https://www.googleapis.com/auth/youtube",   # covers upload + playlist + comments
+    "https://www.googleapis.com/auth/youtube",
 ]
-YOUTUBE_TOKEN_FILE          = BASE_DIR /"youtube_token.json"
+
+# Scopes for comment token (browser flow — Web application credential)
+YOUTUBE_COMMENT_SCOPES = [
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+]
+YOUTUBE_TOKEN_FILE          = BASE_DIR / "youtube_token.json"
 YOUTUBE_CATEGORY_ID         = "22"
 YOUTUBE_PRIVACY             = "public"
 YOUTUBE_CHANNEL_ID          = os.getenv("YOUTUBE_CHANNEL_ID",  "")
